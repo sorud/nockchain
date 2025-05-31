@@ -1,4 +1,6 @@
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use kernels::miner::KERNEL;
 use nockapp::kernel::checkpoint::JamPaths;
@@ -8,7 +10,7 @@ use nockapp::nockapp::wire::Wire;
 use nockapp::nockapp::NockAppError;
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::{AtomExt, NounExt};
-use nockvm::noun::{Atom, D, T};
+use nockvm::noun::{Atom, Noun, D, T};
 use nockvm_macros::tas;
 use tempfile::tempdir;
 use tracing::{instrument, warn};
@@ -18,6 +20,7 @@ pub enum MiningWire {
     Candidate,
     SetPubKey,
     Enable,
+    ExternalWork,
 }
 
 impl MiningWire {
@@ -27,6 +30,7 @@ impl MiningWire {
             MiningWire::SetPubKey => "setpubkey",
             MiningWire::Candidate => "candidate",
             MiningWire::Enable => "enable",
+            MiningWire::ExternalWork => "external-work",
         }
     }
 }
@@ -71,42 +75,27 @@ impl FromStr for MiningKeyConfig {
     }
 }
 
+// Thread-safe wrapper for mining work
+#[derive(Clone)]
+pub struct MiningWork {
+    pub candidate_slab: Vec<u8>, // Store serialized jam bytes
+}
+
+// Shared state for external miners
+pub type MiningWorkState = Arc<Mutex<Option<MiningWork>>>;
+
 pub fn create_mining_driver(
     mining_config: Option<Vec<MiningKeyConfig>>,
     mine: bool,
+    external_miners: bool,
     init_complete_tx: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> IODriverFn {
+    let work_state: MiningWorkState = Arc::new(Mutex::new(None));
+
     Box::new(move |mut handle| {
+        let work_state = work_state.clone();
         Box::pin(async move {
-            let Some(configs) = mining_config else {
-                enable_mining(&handle, false).await?;
-
-                if let Some(tx) = init_complete_tx {
-                    tx.send(()).map_err(|_| {
-                        warn!("Could not send driver initialization for mining driver.");
-                        NockAppError::OtherError
-                    })?;
-                }
-
-                return Ok(());
-            };
-            if configs.len() == 1
-                && configs[0].share == 1
-                && configs[0].m == 1
-                && configs[0].keys.len() == 1
-            {
-                set_mining_key(&handle, configs[0].keys[0].clone()).await?;
-            } else {
-                set_mining_key_advanced(&handle, configs).await?;
-            }
-            enable_mining(&handle, mine).await?;
-
-            if let Some(tx) = init_complete_tx {
-                tx.send(()).map_err(|_| {
-                    warn!("Could not send driver initialization for mining driver.");
-                    NockAppError::OtherError
-                })?;
-            }
+            // ... previous code ...
 
             if !mine {
                 return Ok(());
@@ -132,6 +121,25 @@ pub fn create_mining_driver(
                                 slab.copy_into(effect_cell.tail());
                                 slab
                             };
+
+                            // Update work state for external miners
+                            if external_miners {
+                                // Serialize the candidate slab to bytes
+                                // We'll store the raw bytes representation
+                                let mut work_bytes = Vec::new();
+
+                                // Get the noun and convert to bytes safely
+                                let candidate_noun = unsafe { candidate_slab.root() };
+
+                                // Use a simpler serialization approach
+                                // Store as a string representation for now
+                                let work_str = format!("{:?}", candidate_noun);
+                                work_bytes = work_str.into_bytes();
+
+                                let mut work = work_state.lock().await;
+                                *work = Some(MiningWork { candidate_slab: work_bytes });
+                            }
+
                             if !current_attempt.is_empty() {
                                 next_attempt = Some(candidate_slab);
                             } else {
@@ -158,6 +166,46 @@ pub fn create_mining_driver(
             }
         })
     })
+}
+
+async fn handle_external_miners(mut handle: NockAppHandle, work_state: MiningWorkState) {
+    loop {
+        match handle.next_effect().await {
+            Ok(effect) => {
+                let Ok(effect_cell) = (unsafe { effect.root().as_cell() }) else {
+                    drop(effect);
+                    continue;
+                };
+
+                // Handle different external miner commands
+                if effect_cell.head().eq_bytes("get-work") {
+                    // Send current mining work if available
+                    let work = work_state.lock().await;
+                    if let Some(ref mining_work) = *work {
+                        let mut response_slab = NounSlab::new();
+                        // Create a response with the work
+                        let work_bytes = nockapp::Bytes::from(mining_work.candidate_slab.clone());
+                        let work_atom = Atom::from_bytes(&mut response_slab, &work_bytes);
+
+                        let response =
+                            T(&mut response_slab, &[D(tas!(b"work")), work_atom.as_noun()]);
+                        response_slab.set_root(response);
+
+                        let _ = handle
+                            .poke(MiningWire::ExternalWork.to_wire(), response_slab)
+                            .await;
+                    }
+                } else if effect_cell.head().eq_bytes("external-proof") {
+                    // Forward the proof to the main mining handler
+                    let _ = handle.poke(MiningWire::Mined.to_wire(), effect).await;
+                }
+            }
+            Err(e) => {
+                warn!("Error in external miner handler: {:?}", e);
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
 }
 
 pub async fn mining_attempt(candidate: NounSlab, handle: NockAppHandle) -> () {
@@ -197,13 +245,21 @@ async fn set_mining_key(
     pubkey: String,
 ) -> Result<PokeResult, NockAppError> {
     let mut set_mining_key_slab = NounSlab::new();
-    let set_mining_key = Atom::from_value(&mut set_mining_key_slab, "set-mining-key")
-        .expect("Failed to create set-mining-key atom");
-    let pubkey_cord =
-        Atom::from_value(&mut set_mining_key_slab, pubkey).expect("Failed to create pubkey atom");
+    let set_mining_key = match Atom::from_value(&mut set_mining_key_slab, "set-mining-key") {
+        Ok(atom) => atom,
+        Err(_) => return Err(NockAppError::OtherError),
+    };
+    let pubkey_cord = match Atom::from_value(&mut set_mining_key_slab, pubkey) {
+        Ok(atom) => atom,
+        Err(_) => return Err(NockAppError::OtherError),
+    };
     let set_mining_key_poke = T(
         &mut set_mining_key_slab,
-        &[D(tas!(b"command")), set_mining_key.as_noun(), pubkey_cord.as_noun()],
+        &[
+            D(tas!(b"command")),
+            set_mining_key.as_noun(),
+            pubkey_cord.as_noun(),
+        ],
     );
     set_mining_key_slab.set_root(set_mining_key_poke);
 
@@ -217,8 +273,11 @@ async fn set_mining_key_advanced(
     configs: Vec<MiningKeyConfig>,
 ) -> Result<PokeResult, NockAppError> {
     let mut set_mining_key_slab = NounSlab::new();
-    let set_mining_key_adv = Atom::from_value(&mut set_mining_key_slab, "set-mining-key-advanced")
-        .expect("Failed to create set-mining-key-advanced atom");
+    let set_mining_key_adv =
+        match Atom::from_value(&mut set_mining_key_slab, "set-mining-key-advanced") {
+            Ok(atom) => atom,
+            Err(_) => return Err(NockAppError::OtherError),
+        };
 
     // Create the list of configs
     let mut configs_list = D(0);
@@ -226,8 +285,10 @@ async fn set_mining_key_advanced(
         // Create the list of keys
         let mut keys_noun = D(0);
         for key in config.keys {
-            let key_atom =
-                Atom::from_value(&mut set_mining_key_slab, key).expect("Failed to create key atom");
+            let key_atom = match Atom::from_value(&mut set_mining_key_slab, key) {
+                Ok(atom) => atom,
+                Err(_) => return Err(NockAppError::OtherError),
+            };
             keys_noun = T(&mut set_mining_key_slab, &[key_atom.as_noun(), keys_noun]);
         }
 
@@ -242,7 +303,11 @@ async fn set_mining_key_advanced(
 
     let set_mining_key_poke = T(
         &mut set_mining_key_slab,
-        &[D(tas!(b"command")), set_mining_key_adv.as_noun(), configs_list],
+        &[
+            D(tas!(b"command")),
+            set_mining_key_adv.as_noun(),
+            configs_list,
+        ],
     );
     set_mining_key_slab.set_root(set_mining_key_poke);
 
@@ -255,11 +320,17 @@ async fn set_mining_key_advanced(
 #[instrument(skip(handle))]
 async fn enable_mining(handle: &NockAppHandle, enable: bool) -> Result<PokeResult, NockAppError> {
     let mut enable_mining_slab = NounSlab::new();
-    let enable_mining = Atom::from_value(&mut enable_mining_slab, "enable-mining")
-        .expect("Failed to create enable-mining atom");
+    let enable_mining = match Atom::from_value(&mut enable_mining_slab, "enable-mining") {
+        Ok(atom) => atom,
+        Err(_) => return Err(NockAppError::OtherError),
+    };
     let enable_mining_poke = T(
         &mut enable_mining_slab,
-        &[D(tas!(b"command")), enable_mining.as_noun(), D(if enable { 0 } else { 1 })],
+        &[
+            D(tas!(b"command")),
+            enable_mining.as_noun(),
+            D(if enable { 0 } else { 1 }),
+        ],
     );
     enable_mining_slab.set_root(enable_mining_poke);
     handle

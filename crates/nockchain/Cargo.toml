@@ -37,7 +37,10 @@ tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-test.workspace = true
 
+tokio-util = { version = "0.7", features = ["compat"] }
+
 zkvm-jetpack.workspace = true
+serde.workspace = true
 
 [build-dependencies]
 vergen = { workspace = true, features = [

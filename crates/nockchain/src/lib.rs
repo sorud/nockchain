@@ -1,4 +1,5 @@
 pub mod mining;
+pub mod tcp_proxy;
 
 use std::error::Error;
 use std::fs;
@@ -177,6 +178,8 @@ pub struct NockchainCli {
     pub npc_socket: String,
     #[arg(long, help = "Mine in-kernel", default_value = "false")]
     pub mine: bool,
+    #[arg(long, help = "Enable external miners", default_value = "false")]
+    pub external_miners: bool,
     #[arg(
         long,
         help = "Pubkey to mine to (mutually exclusive with --mining-key-adv)"
@@ -190,6 +193,11 @@ pub struct NockchainCli {
         value_delimiter = ',',
     )]
     pub mining_key_adv: Option<Vec<MiningKeyConfig>>,
+    #[arg(
+        long,
+        help = "TCP address for external miners proxy (e.g., 0.0.0.0:9999)"
+    )]
+    pub tcp_proxy_addr: Option<String>,
     #[arg(long, help = "Watch for genesis block", default_value = "false")]
     pub genesis_watcher: bool,
     #[arg(long, help = "Mine genesis block", default_value = "false")]
@@ -589,9 +597,14 @@ pub async fn init_with_kernel(
     });
 
     let mine = cli.as_ref().map_or(false, |c| c.mine);
+    let external_miners = cli.as_ref().map_or(false, |c| c.external_miners);
 
-    let mining_driver =
-        crate::mining::create_mining_driver(mining_config, mine, Some(mining_init_tx));
+    let mining_driver = crate::mining::create_mining_driver(
+        mining_config,
+        mine,
+        external_miners,
+        Some(mining_init_tx),
+    );
     nockapp.add_io_driver(mining_driver).await;
 
     let libp2p_driver = nockchain_libp2p_io::nc::make_libp2p_driver(
@@ -649,6 +662,19 @@ pub async fn init_with_kernel(
         .await;
 
     nockapp.add_io_driver(nockapp::exit_driver()).await;
+
+    // Start TCP proxy if enabled
+    if let Some(tcp_addr) = cli.as_ref().and_then(|c| c.tcp_proxy_addr.clone()) {
+        let socket_path = cli
+            .as_ref()
+            .map(|c| c.npc_socket.clone())
+            .unwrap_or_default();
+        tokio::spawn(async move {
+            if let Err(e) = crate::tcp_proxy::run_tcp_proxy(tcp_addr, socket_path).await {
+                tracing::error!("TCP proxy error: {}", e);
+            }
+        });
+    }
 
     Ok(nockapp)
 }
