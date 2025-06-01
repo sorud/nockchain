@@ -11,3 +11,7 @@ assets/*.jam
 out.jam
 .direnv/bin/nix-direnv-reload
 .direnv
+.nockchain_identity
+.nockchain_identity.peerid
+Cargo.lock
+flake.lock
