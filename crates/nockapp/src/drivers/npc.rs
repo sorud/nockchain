@@ -87,6 +87,64 @@ pub fn npc_client(stream: UnixStream) -> IODriverFn {
                     match message {
                         Some(Ok(Ok(Some(mut slab)))) => {
                             debug!("npc_client: read message");
+                            debug!("npc_client: read message");
+
+                            // Add debug logging
+                            let root = unsafe { slab.root() };
+                            debug!("Message root type: {:?}", if root.is_atom() { "atom" } else { "cell" });
+
+                            let Ok(message_cell) = root.as_cell() else {
+                                debug!("Message is not a cell, skipping");
+                                continue;
+                            };
+
+                            debug!("Message structure: head is {}, tail is {}",
+                                if message_cell.head().is_atom() { "atom" } else { "cell" },
+                                if message_cell.tail().is_atom() { "atom" } else { "cell" }
+                            );
+
+                            let (pid, directive_cell) = match (message_cell.head().as_direct(), message_cell.tail().as_cell()) {
+                                (Ok(direct), Ok(cell)) => {
+                                    debug!("Message ID: {}", direct.data());
+                                    (direct.data(), cell)
+                                },
+                                (Err(_), _) => {
+                                    debug!("Message ID is not a direct atom");
+                                    continue;
+                                },
+                                (_, Err(_)) => {
+                                    debug!("Message tail is not a cell");
+                                    continue;
+                                },
+                            };
+
+                            debug!("Directive structure: head is {}, tail is {}",
+                                if directive_cell.head().is_atom() { "atom" } else { "cell" },
+                                if directive_cell.tail().is_atom() { "atom" } else { "cell" }
+                            );
+
+                            let Ok(directive_tag) = directive_cell.head().as_direct() else {
+                                debug!("Directive tag is not a direct atom");
+                                continue;
+                            };
+                            let directive_tag = directive_tag.data();
+
+                            debug!("Directive tag value: {} (0x{:x})", directive_tag, directive_tag);
+
+                            match directive_tag {
+                                tas!(b"poke") => {
+                                    debug!("npc_client: poke");
+                                    // ... rest of poke handling
+                                },
+                                tas!(b"peek") => {
+                                    debug!("npc_client: peek");
+                                    // ... rest of peek handling
+                                },
+                                // ... other cases
+                                _ => {
+                                    debug!("npc_client: unexpected message: {:?}", directive_tag);
+                                },
+                            }
                             let Ok(message_cell) = unsafe { slab.root() }.as_cell() else {
                                 continue;
                             };

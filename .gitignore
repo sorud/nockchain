@@ -8,3 +8,6 @@ test-follower
 target
 assets/*.jam
 !crates/nockapp/test-jams
+out.jam
+.direnv/bin/nix-direnv-reload
+.direnv
