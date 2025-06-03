@@ -1,6 +1,6 @@
 pub mod config;
 pub mod mining;
-pub mod tcp_proxy; // Your addition
+pub mod tcp_proxy; // LOCAL ADDITION: TCP proxy support
 
 use std::error::Error;
 use std::fs;
@@ -408,6 +408,8 @@ pub async fn init_with_kernel(
     });
 
     let mine = cli.as_ref().map_or(false, |c| c.mine);
+
+    // LOCAL ADDITION: Support for external miners
     let external_miners = cli.as_ref().map_or(false, |c| c.external_miners);
 
     let mining_driver = crate::mining::create_mining_driver(
@@ -477,7 +479,7 @@ pub async fn init_with_kernel(
 
     nockapp.add_io_driver(nockapp::exit_driver()).await;
 
-    // Start TCP proxy if enabled - YOUR ADDITION
+    // LOCAL ADDITION: Start TCP proxy if enabled
     if let Some(tcp_addr) = cli.as_ref().and_then(|c| c.tcp_proxy_addr.clone()) {
         let socket_path = cli
             .as_ref()

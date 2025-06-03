@@ -40,19 +40,27 @@ pub const GENESIS_HEIGHT: u64 = 897767;
 pub struct NockchainCli {
     #[command(flatten)]
     pub nockapp_cli: nockapp::kernel::boot::Cli,
+
     #[arg(
         long,
         help = "npc socket path",
         default_value = ".socket/nockchain_npc.sock"
     )]
     pub npc_socket: String,
+
     #[arg(long, help = "Mine in-kernel", default_value = "false")]
     pub mine: bool,
+
+    // LOCAL ADDITION: Support for external miners
+    #[arg(long, help = "Enable external miners", default_value = "false")]
+    pub external_miners: bool,
+
     #[arg(
         long,
         help = "Pubkey to mine to (mutually exclusive with --mining-key-adv)"
     )]
     pub mining_pubkey: Option<String>,
+
     #[arg(
         long,
         help = "Advanced mining key configuration (mutually exclusive with --mining-pubkey). Format: share,m:key1,key2,key3",
@@ -61,56 +69,85 @@ pub struct NockchainCli {
         value_delimiter = ',',
     )]
     pub mining_key_adv: Option<Vec<MiningKeyConfig>>,
+
+    // LOCAL ADDITION: TCP proxy for external miners
+    #[arg(
+        long,
+        help = "TCP address for external miners proxy (e.g., 0.0.0.0:9999)"
+    )]
+    pub tcp_proxy_addr: Option<String>,
+
     #[arg(long, help = "Watch for genesis block", default_value = "false")]
     pub genesis_watcher: bool,
+
     #[arg(long, help = "Mine genesis block", default_value = "false")]
     pub genesis_leader: bool,
+
     #[arg(long, help = "use fake genesis block", default_value = "false")]
     pub fakenet: bool,
+
     #[arg(long, help = "Genesis block message", default_value = "Hail Zorp")]
     pub genesis_message: String,
+
     #[arg(
         long,
         help = "URL for Bitcoin Core RPC",
         default_value = "http://100.98.183.39:8332"
     )]
     pub btc_node_url: String,
+
     #[arg(long, help = "Username for Bitcoin Core RPC")]
     pub btc_username: Option<String>,
+
     #[arg(long, help = "Password for Bitcoin Core RPC")]
     pub btc_password: Option<String>,
+
     #[arg(long, help = "Auth cookie path for Bitcoin Core RPC")]
     pub btc_auth_cookie: Option<String>,
+
     #[arg(long, short, help = "Initial peer", action = ArgAction::Append)]
     pub peer: Vec<String>,
+
     #[arg(long, short, help = "Force peer", action = ArgAction::Append)]
     pub force_peer: Vec<String>,
+
     #[arg(long, help = "Allowed peer IDs file")]
     pub allowed_peers_path: Option<String>,
+
     #[arg(long, help = "Don't dial default peers")]
     pub no_default_peers: bool,
+
     #[arg(long, help = "Bind address", action = ArgAction::Append)]
     pub bind: Vec<String>,
+
     #[arg(
         long,
         help = "Generate a new peer ID, discarding the existing one",
         default_value = "false"
     )]
     pub new_peer_id: bool,
+
     #[arg(long, help = "Maximum established incoming connections")]
     pub max_established_incoming: Option<u32>,
+
     #[arg(long, help = "Maximum established outgoing connections")]
     pub max_established_outgoing: Option<u32>,
+
     #[arg(long, help = "Maximum pending incoming connections")]
     pub max_pending_incoming: Option<u32>,
+
     #[arg(long, help = "Maximum pending outgoing connections")]
     pub max_pending_outgoing: Option<u32>,
+
     #[arg(long, help = "Maximum established connections")]
     pub max_established: Option<u32>,
+
     #[arg(long, help = "Maximum established connections per peer")]
     pub max_established_per_peer: Option<u32>,
+
     #[arg(long, help = "Maximum system memory percentage for connection limits")]
     pub max_system_memory_fraction: Option<f64>,
+
     #[arg(long, help = "Maximum process memory for connection limits (bytes)")]
     pub max_system_memory_bytes: Option<usize>,
 }
