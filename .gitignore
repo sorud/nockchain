@@ -13,5 +13,4 @@ out.jam
 .direnv
 .nockchain_identity
 .nockchain_identity.peerid
-Cargo.lock
-flake.lock
+*.lock
